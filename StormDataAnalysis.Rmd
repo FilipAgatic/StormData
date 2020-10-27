@@ -1,30 +1,234 @@
 ---
-title: "StormData"
+title: "Storm Data Analysis"
 author: "FA"
 date: "10/27/2020"
 output: html_document
+
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+## Synopsis
+This analysis concernes the negative consequences of weather storms on health and 
+economy in United States of America by looking into the NOAA Storm Database. To get the best insights regardless of the inconsistent labeling in the dataset, this analysis focuses on the cummulative top contributers to crop damage, property damage, injuries and deaths. The data is first loaded, then reduced to the period of interest, followed by an attempt to merge some duplicate entries. Further on, the data is summarized for both cleaned and original datasets for the final graphical representation.    
 
-## R Markdown
+## Loading libraries
+For graphical data representation we use the ggplot library, for easier data 
+manipulation we use dplyr, for string cleaning we use stringr
+```{r libraries, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(gridExtra)
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
 ```
 
-## Including Plots
+## Loading data from the site
+Data is loaded directly from coursera website. If it already exists in the 
+working directory, this step will be skipped.
+```{r loadingCach, cache = TRUE}
+lk <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+if (!file.exists("StormData.csv"))
+{
+      download.file(lk, "StormData.csv")
+}
 
-You can also embed plots, for example:
+lk2 <- "https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf"
+if (!file.exists("Documentation.pdf"))
+{
+      download.file(lk2, "Documentation.pdf")
+}
+```
+## Data processing
+Downloaded data which we named 'StormData.csv' is loaded via read.csv 
+function. The dataset category is riddled with spelling errors and inconsistent
+naming, so we preprocess the data to create consistent event types categories. 
+We only take the relevant columns of the set regarding health and economic 
+consequences. According to NOAA the data recording start from Jan. 1950. At that time they recorded one event type, tornado. Because we compare events, we start 
+from the day they started monitoring ALL of them which is from January 1996.
+Further we try to reduce the number of categories by reducing some spelling mistakes and inconsistencies. 
+```{r processingCach, cache = TRUE, message = FALSE}
+# read the data
+data <- read.csv("StormData.csv", header=TRUE)
+# change BGN_DATE to date type
+data$BGN_DATE <- as.Date(data$BGN_DATE, format  = "%m/%d/%Y %X")
+#subset to only younger info than January 1996
+data <- data %>% filter(BGN_DATE > "1996-01-01") 
+# choose only the columns we will need
+data <- data %>% select(EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP,
+CROPDMG, CROPDMGEXP)
+# let's put the categories of damages to real values
+expon <- c(3,6,9,0,0)
+names <- c("K","M","B","","0")
+lookup = setNames(as.character(expon),names)
+data <- transform(data, propexpnum = lookup[PROPDMGEXP])
+data <- data %>% mutate(propexpnum = as.numeric(lookup[PROPDMGEXP])) %>%
+mutate(cropexpnum = as.numeric(lookup[CROPDMGEXP])) %>%
+mutate(PROPdamage = PROPDMG*10^propexpnum) %>%
+mutate(CROPdamage = CROPDMG*10^cropexpnum) %>%
+select(EVTYPE, FATALITIES, INJURIES, PROPdamage, CROPdamage)
+# filter events with no health or economic consequence whatsoever
+data <- data %>% filter(PROPdamage != 0 |
+CROPdamage != 0 |
+FATALITIES != 0 |
+INJURIES != 0)
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+length(unique(data$EVTYPE)) # there are 222 levels with misspelings, repetitions
+
+# let's create another dataset "dat" with an atempt to get rid of some of the 
+# duplicate categories
+dat <- data
+# first let's put all categories to lowercase
+dat$EVTYPE <- tolower(data$EVTYPE)
+# remove all numbers
+dat$EVTYPE <- gsub('g[0-9]+', '', dat$EVTYPE)
+dat$EVTYPE <- gsub('[0-9]+', '', dat$EVTYPE)
+dat$EVTYPE <- gsub('[()]', '', dat$EVTYPE)
+
+# replace some common shortcuts
+dat$EVTYPE <- gsub('tstm', 'thunderstorm', dat$EVTYPE)
+dat$EVTYPE <- gsub('cstl', 'coastal', dat$EVTYPE)
+dat$EVTYPE <- gsub('hvy', 'heavy', dat$EVTYPE)
+dat$EVTYPE <- gsub('fld', 'flood', dat$EVTYPE)
+# second we remove unnecessary spaces
+dat$EVTYPE <- gsub("\\s+", " ", str_trim(dat$EVTYPE))
+# get rid of plural duplicates
+dat$EVTYPE <- sub("s$", "", dat$EVTYPE)
+length(unique(dat$EVTYPE))
+# we reduced the number of categories to 162
+```
+## Data grouping
+We next group the data by even types and then we get the cummulative values for economic and health markers for the chosen time period. First we consider the top 5 percentile cummulative values for all the different event types, then we take the top 5 events to plot for each specific health or economic factor.  
+
+```{r groupingData, message = FALSE}
+# sum up the economic and health factors by category for cleaned data and for
+# raw dataset
+sumsClean <- dat %>% group_by(EVTYPE) %>%
+      summarise(totalCrop = sum(CROPdamage, na.rm = T),
+                totalProp = sum(PROPdamage, na.rm = T),
+                totalDeath = sum(FATALITIES, na.rm = T),
+                totalInjury = sum(INJURIES, na.rm = T))
+sumsRaw <- data %>% group_by(EVTYPE) %>%
+      summarise(totalCrop = sum(CROPdamage, na.rm = T),
+                totalProp = sum(PROPdamage, na.rm = T),
+                totalDeath = sum(FATALITIES, na.rm = T),
+                totalInjury = sum(INJURIES, na.rm = T))
+
+# subset to top 5 % of at least one of the four categories
+sumsClean <- sumsClean %>% 
+      filter(quantile(totalProp, 0.95) < totalProp |
+                   quantile(totalCrop, 0.95) < totalCrop |
+                   quantile(totalDeath, 0.95) < totalDeath |
+                   quantile(totalInjury, 0.95) < totalInjury)
+
+sumsRaw <- sumsRaw %>% 
+      filter(quantile(totalProp, 0.95) < totalProp |
+                   quantile(totalCrop, 0.95) < totalCrop |
+                   quantile(totalDeath, 0.95) < totalDeath |
+                   quantile(totalInjury, 0.95) < totalInjury)
+# look for duplicates in the final top categories of the cleaned dataset:
+table(sumsClean$EVTYPE)
+# one can see hurricane/typhoon + hurricane, other categories are ok as per: https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf
+sumsClean$EVTYPE[which(sumsClean$EVTYPE == "hurricane")] <- "hurricane/typhoon"
+# sum them up together
+sumsClean <- sumsClean %>% group_by(EVTYPE) %>%
+      summarise(totalCrop = sum(totalCrop, na.rm = T),
+                totalProp = sum(totalProp, na.rm = T),
+                totalDeath = sum(totalDeath, na.rm = T),
+                totalInjury = sum(totalInjury, na.rm = T))
+# get the top 5 categories for each statistic for both datasets
+Prop <- arrange(sumsClean, desc(totalProp))[1:5,]
+Crop <- arrange(sumsClean, desc(totalCrop))[1:5,]
+Death <- arrange(sumsClean, desc(totalDeath))[1:5,]
+Injury <- arrange(sumsClean, desc(totalInjury))[1:5,]
+
+# not cleaned
+PropRaw <- arrange(sumsRaw, desc(totalProp))[1:5,]
+CropRaw <- arrange(sumsRaw, desc(totalCrop))[1:5,]
+DeathRaw <- arrange(sumsRaw, desc(totalDeath))[1:5,]
+InjuryRaw <- arrange(sumsRaw, desc(totalInjury))[1:5,]
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Prepare plots 
+I use ordered event types by an overall impact on each factor to showcase worse weather events for economy and health in the US. Both the raw data with 222 event types and the reduced data with 162 types are prepared for plotting. Event types are arranged in descending order by their impact. 
+
+```{r preparePlot}
+
+
+p1 <- ggplot(Prop, aes(x = reorder(EVTYPE, -totalProp), y = totalProp)) + 
+      geom_bar(stat = "identity") +
+      ggtitle("Property damage: labels reduced") +
+      xlab("Event") + 
+      ylab("Total cost [$]") +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+pR1 <- ggplot(PropRaw, aes(x = reorder(EVTYPE, -totalProp), y = totalProp)) + 
+      geom_bar(stat = "identity") +
+      ggtitle("Property damage: original labels") +
+      xlab("Event") + 
+      ylab("Total cost [$]") +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+p2 <- ggplot(Crop, aes(x = reorder(EVTYPE, -totalCrop), y = totalCrop)) + 
+      geom_bar(stat = "identity") + 
+      ggtitle("Crop damage: labels reduced") +
+      xlab("Event") + 
+      ylab("Total cost [$]") +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+pR2 <- ggplot(CropRaw, aes(x = reorder(EVTYPE, -totalCrop), y = totalCrop)) + 
+      geom_bar(stat = "identity") + 
+      ggtitle("Crop damage: original labels") +
+      xlab("Event") + 
+      ylab("Total cost [$]") +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+p3 <- ggplot(Death, aes(x = reorder(EVTYPE, -totalDeath), y = totalDeath)) + 
+      geom_bar(stat = "identity") +
+      ggtitle("Fatalities: labels reduced") +
+      xlab("Event") + 
+      ylab("Total fatalities") +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+pR3 <- ggplot(DeathRaw, aes(x = reorder(EVTYPE, -totalDeath), y = totalDeath)) + 
+      geom_bar(stat = "identity") +
+      ggtitle("Fatalities: original labels") +
+      xlab("Event") + 
+      ylab("Total fatalities") +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+p4 <- ggplot(Injury, aes(x = reorder(EVTYPE, -totalInjury), y = totalInjury)) + 
+      geom_bar(stat = "identity") +
+      ggtitle("Injuries: labels reduced") +
+      xlab("Event") + 
+      ylab("Total injuries") +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+pR4 <- ggplot(InjuryRaw, aes(x = reorder(EVTYPE, -totalInjury), y = totalInjury)) + 
+      geom_bar(stat = "identity") +
+      ggtitle("Injuries: original labels") +
+      xlab("Event") + 
+      ylab("Total injuries") +
+      scale_x_discrete(guide = guide_axis(n.dodge = 2))
+
+```
+## Results
+# Economy: 
+we can see that the main source of property damage in the period from 1996 comes from floods whereas the crops are most affected by droughts. There is minor difference between the sets where we tried to at least partially fix the labels and the one where we kept them as they were. In the crop damage plot, we can see that the original labels contain a duplicate of the hurricane/typhoon category.  
+```{r plotEconomy}
+grid.arrange(p1, p2, pR1, pR2, nrow = 2, top = "Economic consequences" )
+
+```
+
+# Health:
+we can see that the deadliest weather event in the period from 1996 was excessive heat and the one that caused the most injuries was tornado. Again we see mostly consistent data between datasets with an exception of flood being replaced with rip current for the fifth most deadly event and thunderstorm wind getting a fourth place before lightning in the injuries category.
+```{r plotHealth}
+grid.arrange(p3, p4, pR3, pR4, nrow = 2, top = "Health consequences" )
+```
+
+## Discussion 
+
+The short analysis shows floods and droughts as the most harmful events to economy and excessive heat and tornadoes to human wellbeing. However, the dataset used had very inconsistent categories listed under event types and it is far from a completely clean dataset. Further cleaning could be used to get more reliable final estimates, however this analysis shows that at least the main contributors stay the same when some effort to reduce the overall number of categories was applied. 
